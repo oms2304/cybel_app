@@ -1,8 +1,17 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from main import chat_once
 import main  # Ensure this is the main.py above
 
 app = FastAPI()
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    response: str
 
 origins = [
     "http://localhost:8000",
@@ -28,8 +37,10 @@ def shutdown_event():
     if main.client:
         main.client.close()
 
-@app.get("/chat")
-def chat_endpoint(user_input: str):
+
+@app.post("/chat", response_model=ChatResponse)
+def chat_endpoint(req: ChatRequest):
     # This now uses the pre-initialized rag_chain
-    result = main.chat_once(user_input)
-    return {"response": result}
+    user_msg = req.message
+    ai_reply = chat_once(user_msg)
+    return {"response": ai_reply}

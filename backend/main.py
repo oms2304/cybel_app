@@ -205,6 +205,8 @@
 import os
 import logging
 from dotenv import load_dotenv
+import atexit
+
 
 # 1. LOAD DOTENV FIRST
 load_dotenv()
@@ -228,6 +230,48 @@ documents = None
 rude_keywords = ["stupid", "idiot", "shut up", "useless", "dumb"]
 user_id = "Automat-User-Id"
 
+
+
+def send_upload_logs_to_weaviate(client, log_file="uploaded_docs_log.json"):
+    if not os.path.exists(log_file):
+        print("No upload logs to send.")
+        return
+
+    collection = client.collections.use("CybelUploadLogs")
+
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    if not lines:
+        print("Upload log file empty.")
+        return
+
+    with collection.batch.fixed_size(batch_size=100) as batch:
+        for line in lines:
+            try:
+                record = json.loads(line)
+                batch.add_object({
+                    "entry": record.get("entry"),
+                    "timestamp": record.get("timestamp"),
+                    "type": "upload_log"
+                })
+            except Exception as e:
+                print(f"Failed to upload log entry: {e}")
+
+    print(f"Uploaded {len(lines)} upload logs to Weaviate.")
+
+
+def on_application_close():
+    print(" on_application_close CALLED")
+
+    try:
+        client.connect()
+        send_upload_logs_to_weaviate(client)
+        client.close()
+    except Exception as e:
+        print(f"Error during shutdown logging: {e}")
+
+
 def initialize_system():
     global client, rag_chain, personality_data, user_interactions, documents
     
@@ -242,6 +286,7 @@ def initialize_system():
         cluster_url=url,
         auth_credentials=Auth.api_key(key)
     )
+    atexit.register(on_application_close)
 
     # 3. Ready Check (Crucial)
     if not client.is_ready():
@@ -268,3 +313,13 @@ def chat_once(user_input: str):
         # This will now show you the ACTUAL error in your console
         print(f"CRITICAL ERROR: {e}")
         return f"System Error: {str(e)}"
+    
+if __name__ == "__main__":
+    initialize_system()
+
+    # Keep the app alive so Ctrl+C works
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        print("\nShutting down...")

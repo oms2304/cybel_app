@@ -9,7 +9,9 @@ from   langchain.docstore.document      import Document
 from   langchain.schema.document        import Document
 from   langchain_groq                   import ChatGroq
 
+
 current_dir = os.getcwd()
+
 
 def load_json_as_documents(client, directory):
     documents = []
@@ -38,6 +40,13 @@ def load_json_as_documents(client, directory):
                     "entry": d
                 }
             )
+
+            with open("uploaded_docs_log.json", "a", encoding="utf-8") as log_f:
+                log_f.write(json.dumps({
+                    "entry": d,
+                    "timestamp": time.time()
+                }) + "\n")
+
             if batch.number_errors > 10:
                 print("Batch import stopped due to excessive errors.")
                 break
