@@ -15,6 +15,8 @@ from automat_llm.config import load_config, save_config, update_config
 from rich.panel    import Panel
 from rich.markdown import Markdown
 from rich.console import Console
+from datetime import datetime
+import json
 
 console     = Console()
 config      = load_config()
@@ -55,33 +57,146 @@ def chat_once(user_input: str):
         return f"Error generating response: {e}"
 
 
-# main.py
+def upload_logs_to_weaviate(client, log_filepath: str):
+    """Parse chat logs and upload them to Weaviate."""
+    if not os.path.exists(log_filepath):
+        print(f"Log file not found at {log_filepath}")
+        return
+    
+    try:
+        with open(log_filepath, 'r', encoding='utf-8', errors='replace') as f:
+            log_content = f.read()
+        
+        if not log_content.strip():
+            print("Log file is empty.")
+            return
+        
+        # Parse logs
+        conversations = []
+        lines = log_content.split('\n')
+        current_user_input = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Look for "User: " pattern
+            if " - INFO - User: " in line:
+                user_part = line.split(" - INFO - User: ", 1)
+                if len(user_part) == 2:
+                    current_user_input = user_part[1].strip()
+            
+            # Look for "Bot: " pattern (your log format uses "Bot:" not "Assistant:")
+            elif " - INFO - Bot: " in line and current_user_input:
+                bot_part = line.split(" - INFO - Bot: ", 1)
+                if len(bot_part) == 2:
+                    bot_response = bot_part[1].strip()
+                    
+                    conversations.append({
+                        "user_input": current_user_input,
+                        "bot_response": bot_response
+                    })
+                    current_user_input = None  # Reset
+        
+        if not conversations:
+            print("No complete conversations found in logs.")
+            print(f"Debug: First 500 chars of log:\n{log_content[:500]}")
+            return
+        
+        print(f"Found {len(conversations)} conversations to upload to Weaviate.")
+        
+        # Upload to Weaviate
+        collection = client.collections.get("SampleData")
+        
+        uploaded_count = 0
+        with collection.batch.dynamic() as batch:
+            for conv in conversations:
+                conversation_text = f"""User: {conv['user_input']}
+Bot: {conv['bot_response']}"""
+                
+                batch.add_object(
+                    properties={
+                        "text": conversation_text,
+                        "metadata": json.dumps({
+                            "type": "conversation_log",
+                            "source": "chatbot_logs"
+                        })
+                    }
+                )
+                uploaded_count += 1
+        
+        print(f"✅ Successfully uploaded {uploaded_count} conversations to Weaviate.")
+        
+    except Exception as e:
+        print(f"❌ Error uploading logs: {e}")
+        import traceback
+        traceback.print_exc()
 
-def initialize_system():
+
+def check_weaviate_contents(client):
+    """Check what's actually in Weaviate."""
+    try:
+        collection = client.collections.get("SampleData")
+        
+        # Get total count
+        result = collection.aggregate.over_all(total_count=True)
+        total = result.total_count
+        
+        print(f"\n{'='*50}")
+        print(f"📊 SampleData Collection Statistics")
+        print(f"{'='*50}")
+        print(f"Total objects: {total}")
+        
+        if total > 0:
+            # Fetch first 5 objects to see what they look like
+            print(f"\n📄 Sample objects:")
+            for i, item in enumerate(collection.iterator()):
+                if i >= 5: break
+                print(f"\nObject {i+1}:")
+                print(f"  UUID: {item.uuid}")
+                print(f"  Properties: {item.properties}")
+        else:
+            print("\n⚠️  Collection is empty!")
+            
+    except Exception as e:
+        print(f"❌ Error checking Weaviate: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def initialize_system(weaviate_client):
     global client, personality_data, user_interactions, documents, rag_chain, rude_keywords
 
-    if os.environ.get("LOCAL_WEAVIATE") == "1":
-        client = weaviate.connect_to_local(
-            additional_config=wvc.init.AdditionalConfig(
-                timeout=wvc.init.Timeout(init=60, query=30, insert=120)
-            )
-        )
-    else:
-        client = weaviate.connect_to_weaviate_cloud(
-            cluster_url=weaviate_url,
-            auth_credentials=Auth.api_key(weaviate_api_key),
-        )
+    client = weaviate_client
+
+    # if os.environ.get("LOCAL_WEAVIATE") == "1":
+    #     client = weaviate.connect_to_local(
+    #         additional_config=wvc.init.AdditionalConfig(
+    #             timeout=wvc.init.Timeout(init=60, query=30, insert=120)
+    #         )
+    #     )
+    # else:
+    #     client = weaviate.connect_to_weaviate_cloud(
+    #         cluster_url=weaviate_url,
+    #         auth_credentials=Auth.api_key(weaviate_api_key),
+    #     )
 
     personality_data = load_personality_file()
     user_interactions = init_interactions()
     documents = load_json_as_documents(client, directory)
+    
     if not documents:
         print("No documents loaded. Exiting.")
         exit()
 
     print(f"Loaded {len(documents)} documents for RAG.")
+
     rude_keywords = ["stupid", "idiot", "shut up", "useless", "dumb"]
     rag_chain = create_rag_chain(client, user_id, documents)
+
+    check_weaviate_contents(client)
+
 
 # Set up logging to save chatbot interactions
 logging.basicConfig(
@@ -108,8 +223,8 @@ if __name__ == "__main__":
         client = weaviate.connect_to_local(additional_config=wvc.init.AdditionalConfig(timeout=wvc.init.Timeout(init=60,query=30, insert=120)))
     else:
         client = weaviate.connect_to_weaviate_cloud(
-        cluster_url=weaviate_url,                                    # Replace with your Weaviate Cloud URL
-       auth_credentials=Auth.api_key(weaviate_api_key),              # Replace with your Weaviate Cloud key
+        cluster_url=weaviate_url,                                    
+       auth_credentials=Auth.api_key(weaviate_api_key),              
     )
 
     personality_data  = load_personality_file()
