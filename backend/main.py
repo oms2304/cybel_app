@@ -57,37 +57,49 @@ def chat_once(user_input: str):
         return f"Error generating response: {e}"
 
 
-def upload_logs_to_weaviate(client, log_filepath: str):
-    """Parse chat logs and upload them to Weaviate."""
+def upload_logs_to_weaviate(client, log_filepath: str, state_file: str = "upload_state.json"):
+    """Parse chat logs and upload only new entries to Weaviate."""
     if not os.path.exists(log_filepath):
         print(f"Log file not found at {log_filepath}")
         return
     
+    # Load the last upload position
+    last_position = 0
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                last_position = state.get('last_line', 0)
+        except:
+            last_position = 0
+    
     try:
         with open(log_filepath, 'r', encoding='utf-8', errors='replace') as f:
-            log_content = f.read()
+            lines = f.readlines()
         
-        if not log_content.strip():
-            print("Log file is empty.")
+        total_lines = len(lines)  # ✅ Get total line count
+        
+        # Only process lines after the last position
+        new_lines = lines[last_position:]
+        
+        if not new_lines:
+            print("No new logs to upload.")
             return
         
-        # Parse logs
+        # Parse logs (same as before, but on new_lines)
         conversations = []
-        lines = log_content.split('\n')
         current_user_input = None
         
-        for line in lines:
+        for line in new_lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Look for "User: " pattern
             if " - INFO - User: " in line:
                 user_part = line.split(" - INFO - User: ", 1)
                 if len(user_part) == 2:
                     current_user_input = user_part[1].strip()
             
-            # Look for "Bot: " pattern (your log format uses "Bot:" not "Assistant:")
             elif " - INFO - Bot: " in line and current_user_input:
                 bot_part = line.split(" - INFO - Bot: ", 1)
                 if len(bot_part) == 2:
@@ -97,14 +109,16 @@ def upload_logs_to_weaviate(client, log_filepath: str):
                         "user_input": current_user_input,
                         "bot_response": bot_response
                     })
-                    current_user_input = None  # Reset
+                    current_user_input = None
         
         if not conversations:
-            print("No complete conversations found in logs.")
-            print(f"Debug: First 500 chars of log:\n{log_content[:500]}")
+            print("No new complete conversations found.")
+            # ✅ STILL update the state file to mark these lines as processed
+            with open(state_file, 'w') as f:
+                json.dump({'last_line': total_lines}, f)
             return
         
-        print(f"Found {len(conversations)} conversations to upload to Weaviate.")
+        print(f"Found {len(conversations)} new conversations to upload.")
         
         # Upload to Weaviate
         collection = client.collections.get("SampleData")
@@ -120,19 +134,24 @@ Bot: {conv['bot_response']}"""
                         "text": conversation_text,
                         "metadata": json.dumps({
                             "type": "conversation_log",
-                            "source": "chatbot_logs"
+                            "source": "chatbot_logs",
+                            "uploaded_at": datetime.now().isoformat()
                         })
                     }
                 )
                 uploaded_count += 1
         
-        print(f"✅ Successfully uploaded {uploaded_count} conversations to Weaviate.")
+        # ✅ Save the TOTAL line count, not just len(lines) which equals total_lines
+        with open(state_file, 'w') as f:
+            json.dump({'last_line': total_lines}, f)
+        
+        print(f"✅ Successfully uploaded {uploaded_count} new conversations to Weaviate.")
         
     except Exception as e:
         print(f"❌ Error uploading logs: {e}")
         import traceback
         traceback.print_exc()
-
+        
 
 def check_weaviate_contents(client):
     """Check what's actually in Weaviate."""
